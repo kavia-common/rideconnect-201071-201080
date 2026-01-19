@@ -17,12 +17,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.routers import auth as auth_router
+from src.api.routers import drivers as drivers_router
+from src.api.routers import rides as rides_router
 from src.api.routers import users as users_router
 
 openapi_tags = [
     {"name": "health", "description": "Health and readiness endpoints."},
     {"name": "auth", "description": "Registration and login endpoints."},
     {"name": "users", "description": "User profile endpoints."},
+    {"name": "drivers", "description": "Driver onboarding, availability, and discovery endpoints."},
+    {"name": "rides", "description": "Ride booking, assignment, lifecycle, and history endpoints."},
 ]
 
 app = FastAPI(
@@ -43,6 +47,8 @@ app.add_middleware(
 
 app.include_router(auth_router.router)
 app.include_router(users_router.router)
+app.include_router(drivers_router.router)
+app.include_router(rides_router.router)
 
 
 @app.get(
