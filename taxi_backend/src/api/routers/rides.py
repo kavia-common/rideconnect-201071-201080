@@ -137,6 +137,49 @@ def _add_event(db: Session, ride: Ride, event_type: str, payload: Optional[Dict[
     db.add(ev)
 
 
+# PUBLIC_INTERFACE
+async def add_ride_event(db: Session, *, ride_id: UUID, event_type: str, payload: Optional[Dict[str, Any]] = None) -> None:
+    """
+    Append an event to ride_events for use by realtime WebSocket handlers.
+
+    Notes:
+    - This function commits immediately to ensure events are durable in case the
+      WS connection drops.
+    """
+    ride = db.scalar(select(Ride).where(Ride.id == ride_id))
+    if not ride:
+        return
+
+    _add_event(db, ride, event_type, payload or {})
+    db.commit()
+
+
+async def _broadcast_ride_status(ride: Ride, *, by_user_id: UUID, old_status: RideStatus, new_status: RideStatus) -> None:
+    """
+    Broadcast ride status updates over WebSockets.
+
+    Kept async to align with the realtime broker API.
+    """
+    from src.api.realtime import broadcast_to_ride
+
+    await broadcast_to_ride(
+        ride.id,
+        {
+            "type": "ride_status",
+            "ride_id": str(ride.id),
+            "status": new_status.value,
+            "from": old_status.value,
+            "by_user_id": str(by_user_id),
+            "driver_id": str(ride.driver_id) if ride.driver_id else None,
+            "rider_id": str(ride.rider_id),
+            "ts": ride.updated_at.timestamp() if ride.updated_at else None,
+        },
+        to_riders=True,
+        to_drivers=True,
+        to_admins=True,
+    )
+
+
 @router.post(
     "",
     response_model=RidePublic,
@@ -242,6 +285,7 @@ def assign_driver(
             detail="Driver is not available for assignment.",
         )
 
+    old_status = ride.status
     ride.driver_id = current_driver_user.id
     ride.status = RideStatus.assigned
     ride.updated_at = _utcnow()
@@ -256,6 +300,12 @@ def assign_driver(
     db.add(ride)
     db.commit()
     db.refresh(ride)
+
+    # Broadcast status update after DB commit.
+    import anyio
+
+    anyio.from_thread.run(_broadcast_ride_status, ride, by_user_id=current_driver_user.id, old_status=old_status, new_status=ride.status)
+
     return _to_public(ride)
 
 
@@ -338,6 +388,12 @@ def update_ride_status(
     db.add(ride)
     db.commit()
     db.refresh(ride)
+
+    # Broadcast status update after DB commit.
+    import anyio
+
+    anyio.from_thread.run(_broadcast_ride_status, ride, by_user_id=current_user.id, old_status=old_status, new_status=ride.status)
+
     return _to_public(ride)
 
 
